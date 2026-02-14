@@ -54,4 +54,10 @@ echo -e "${YELLOW}You can run it later as:${NC} sudo swap-setup.sh [options]"
 echo ""
 
 # Run the script, restoring stdin from terminal (needed when piped via wget|bash)
-exec bash "${INSTALL_DIR}/${SCRIPT_NAME}" "$@" </dev/tty
+if [[ -e /dev/tty ]]; then
+    exec bash "${INSTALL_DIR}/${SCRIPT_NAME}" "$@" </dev/tty
+else
+    log_info "No TTY detected (container/CI). Script installed but not started."
+    echo -e "${BOLD}Run manually:${NC} sudo swap-setup.sh"
+    echo -e "${BOLD}Or non-interactive:${NC} sudo swap-setup.sh --ram 2"
+fi
