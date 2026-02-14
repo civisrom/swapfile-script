@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # install.sh — Download and run swap-setup.sh
-# Usage: bash <(wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh)
+# Usage: wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh | sudo bash
 #
 set -euo pipefail
 
@@ -25,7 +25,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 # Check root
 if [[ $EUID -ne 0 ]]; then
     log_error "Run as root: sudo bash install.sh"
-    echo -e "Or: ${BOLD}sudo bash <(wget -qO- ${REPO_URL}/install.sh)${NC}"
+    echo -e "Or: ${BOLD}wget -qO- ${REPO_URL}/install.sh | sudo bash${NC}"
     exit 1
 fi
 

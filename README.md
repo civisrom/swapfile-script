@@ -7,13 +7,13 @@
 Одна команда — скачивает, устанавливает в `/usr/local/sbin/` и запускает интерактивный мастер:
 
 ```bash
-sudo bash <(wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh)
+wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh | sudo bash
 ```
 
 С параметрами (без интерактивного режима):
 
 ```bash
-sudo bash <(wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh) --ram 1
+wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh | sudo bash -s -- --ram 1
 ```
 
 После установки скрипт доступен как системная команда:
