@@ -53,5 +53,5 @@ log_info "Installed to ${INSTALL_DIR}/${SCRIPT_NAME}"
 echo -e "${YELLOW}You can run it later as:${NC} sudo swap-setup.sh [options]"
 echo ""
 
-# Run the script, pass through any extra arguments
-exec bash "${INSTALL_DIR}/${SCRIPT_NAME}" "$@"
+# Run the script, restoring stdin from terminal (needed when piped via wget|bash)
+exec bash "${INSTALL_DIR}/${SCRIPT_NAME}" "$@" </dev/tty
