@@ -4,15 +4,23 @@
 
 ## Быстрая установка
 
+Одна команда — скачивает, устанавливает в `/usr/local/sbin/` и запускает интерактивный мастер:
+
 ```bash
-bash <(wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/swap-setup.sh)
+sudo bash <(wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh)
 ```
 
-Или скачать и запустить отдельно:
+С параметрами (без интерактивного режима):
 
 ```bash
-wget -O swap-setup.sh https://raw.githubusercontent.com/civisrom/swapfile-script/main/swap-setup.sh
-sudo bash swap-setup.sh
+sudo bash <(wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh) --ram 1
+```
+
+После установки скрипт доступен как системная команда:
+
+```bash
+sudo swap-setup.sh --status
+sudo swap-setup.sh --remove
 ```
 
 ## Что делает скрипт
