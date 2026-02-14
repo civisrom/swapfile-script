@@ -1,4 +1,4 @@
-# swap-setup.sh
+# swap-setup
 
 Автоматическая настройка гибридной подкачки (swapfile + zram) для Debian/Ubuntu VPS с малым объёмом RAM (1–4 ГБ).
 
