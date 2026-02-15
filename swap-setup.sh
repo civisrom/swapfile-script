@@ -58,7 +58,7 @@ Options:
 
 RAM Templates:
   --ram 0.5   512 MB RAM: swapfile 1024MB, zram 100%, swappiness 100
-  --ram 1     1 GB RAM:   swapfile 768MB,  zram 100%, swappiness 100
+  --ram 1     1 GB RAM:   swapfile 512MB,  zram 100%, swappiness 100
   --ram 2     2 GB RAM:   swapfile 1024MB, zram 75%,  swappiness 100
   --ram 3     3 GB RAM:   swapfile 1024MB, zram 60%,  swappiness 80
   --ram 4     4 GB RAM:   swapfile 1536MB, zram 50%,  swappiness 80
@@ -139,7 +139,7 @@ get_template_values() {
     local ram_gb="$1"
     case "$ram_gb" in
         0.5) echo "1024 100 100" ;;
-        1)   echo "768 100 100"  ;;
+        1)   echo "512 100 100"  ;;
         2)   echo "1024 75 100"  ;;
         3)   echo "1024 60 80"   ;;
         4)   echo "1536 50 80"   ;;
