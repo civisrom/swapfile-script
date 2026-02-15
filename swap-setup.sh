@@ -205,7 +205,7 @@ print_templates_table() {
         if [[ "$tpl" == "$recommended" ]]; then
             marker=" ${GREEN}<< recommended${NC}"
         fi
-        printf "  ${DIM}│${NC}  %s   ${DIM}│${NC} %4s MB      ${DIM}│${NC}   %3s%%    ${DIM}│${NC} zstd  ${DIM}│${NC}   100    ${DIM}│${NC}    %3s     ${DIM}│${NC}%b\n" \
+        printf "  ${DIM}│${NC} %-3s  ${DIM}│${NC} %4s MB      ${DIM}│${NC}   %3s%%    ${DIM}│${NC} zstd  ${DIM}│${NC}   100    ${DIM}│${NC}    %3s     ${DIM}│${NC}%b\n" \
             "$tpl" "$t_swap" "$t_pct" "$t_swp" "$marker"
     done
 
@@ -224,7 +224,7 @@ ask_value() {
     local hint="$3"
     local result
 
-    echo -e "  ${DIM}${hint}${NC}"
+    echo -e "  ${DIM}${hint}${NC}" >&2
     read -rp "$(echo -e "  ${BOLD}${prompt}${NC} [${GREEN}${default}${NC}]: ")" result
     result="${result:-$default}"
     echo "$result"
@@ -275,7 +275,7 @@ interactive_manual_input() {
     # ── Swapfile size ────────────────────────────────────────────────────────
     echo -e "  ${BOLD}1. Swap file size (MB)${NC}"
     SWAPFILE_SIZE_MB=$(ask_value "   Swapfile size MB" "1024" \
-        "   Recommended: 512-768 for 1GB, 1024 for 2GB, 1024-1536 for 3-4GB")
+        "   Recommended: 1024 for 512MB, 512 for 1GB, 1024 for 2GB, 1024-1536 for 3-4GB")
     echo ""
 
     # ── ALGO ─────────────────────────────────────────────────────────────────
@@ -324,7 +324,7 @@ interactive_edit_params() {
     # ── Swapfile size ────────────────────────────────────────────────────────
     echo -e "  ${BOLD}1. Swap file size${NC}"
     SWAPFILE_SIZE_MB=$(ask_value "   Swapfile size MB" "$SWAPFILE_SIZE_MB" \
-        "   Recommended: 512-768 for 1GB, 1024 for 2GB, 1024-1536 for 3-4GB")
+        "   Recommended: 1024 for 512MB, 512 for 1GB, 1024 for 2GB, 1024-1536 for 3-4GB")
     echo ""
 
     # ── ALGO ─────────────────────────────────────────────────────────────────
