@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # swap-setup.sh — Automated hybrid swap (swapfile + zram) setup for Debian/Ubuntu VPS
-# Supports RAM templates: 1GB, 2GB, 3GB, 4GB, interactive wizard, and CLI flags
+# Supports RAM templates: 512MB, 1GB, 2GB, 3GB, 4GB, interactive wizard, and CLI flags
 #
 # Usage:
 #   sudo bash swap-setup.sh                  # interactive wizard
@@ -45,7 +45,7 @@ Usage: sudo bash swap-setup.sh [OPTIONS]
 Without options the script starts an interactive wizard.
 
 Options:
-  --ram N             Use preset template for N GB RAM (1, 2, 3, 4)
+  --ram N             Use preset template for N GB RAM (0.5, 1, 2, 3, 4)
   --swapfile-size MB  Swap file size in MB (overrides template)
   --zram-percent N    zram size as % of RAM (overrides template)
   --zram-algo ALGO    zram compression algorithm (default: zstd)
@@ -57,10 +57,11 @@ Options:
   -h, --help          Show this help
 
 RAM Templates:
-  --ram 1   1 GB RAM: swapfile 768MB,  zram 100%, swappiness 100
-  --ram 2   2 GB RAM: swapfile 1024MB, zram 75%,  swappiness 100
-  --ram 3   3 GB RAM: swapfile 1024MB, zram 60%,  swappiness 80
-  --ram 4   4 GB RAM: swapfile 1536MB, zram 50%,  swappiness 80
+  --ram 0.5   512 MB RAM: swapfile 1024MB, zram 100%, swappiness 100
+  --ram 1     1 GB RAM:   swapfile 768MB,  zram 100%, swappiness 100
+  --ram 2     2 GB RAM:   swapfile 1024MB, zram 75%,  swappiness 100
+  --ram 3     3 GB RAM:   swapfile 1024MB, zram 60%,  swappiness 80
+  --ram 4     4 GB RAM:   swapfile 1536MB, zram 50%,  swappiness 80
 
 Examples:
   sudo bash swap-setup.sh                     # interactive wizard
@@ -137,11 +138,12 @@ show_system_info() {
 get_template_values() {
     local ram_gb="$1"
     case "$ram_gb" in
-        1) echo "768 100 100" ;;
-        2) echo "1024 75 100" ;;
-        3) echo "1024 60 80"  ;;
-        4) echo "1536 50 80"  ;;
-        *) echo "" ;;
+        0.5) echo "1024 100 100" ;;
+        1)   echo "768 100 100"  ;;
+        2)   echo "1024 75 100"  ;;
+        3)   echo "1024 60 80"   ;;
+        4)   echo "1536 50 80"   ;;
+        *)   echo "" ;;
     esac
 }
 
@@ -150,7 +152,7 @@ apply_template() {
     local vals
     vals=$(get_template_values "$ram_gb")
     if [[ -z "$vals" ]]; then
-        log_error "Unsupported RAM template: $ram_gb (use 1, 2, 3 or 4)"
+        log_error "Unsupported RAM template: $ram_gb (use 0.5, 1, 2, 3 or 4)"
         exit 1
     fi
     local t_swap t_percent t_swappiness
@@ -166,7 +168,8 @@ apply_template() {
 auto_detect_template() {
     local ram_mb
     ram_mb=$(get_total_ram_mb)
-    if   (( ram_mb <= 1280 )); then apply_template 1
+    if   (( ram_mb <= 640  )); then apply_template 0.5
+    elif (( ram_mb <= 1280 )); then apply_template 1
     elif (( ram_mb <= 2304 )); then apply_template 2
     elif (( ram_mb <= 3328 )); then apply_template 3
     else                            apply_template 4
@@ -187,13 +190,14 @@ print_templates_table() {
     echo -e "  ${DIM}├──────┼──────────────┼───────────┼───────┼──────────┼────────────┤${NC}"
 
     local recommended=""
-    if   (( ram_mb <= 1280 )); then recommended=1
+    if   (( ram_mb <= 640  )); then recommended=0.5
+    elif (( ram_mb <= 1280 )); then recommended=1
     elif (( ram_mb <= 2304 )); then recommended=2
     elif (( ram_mb <= 3328 )); then recommended=3
     else                            recommended=4
     fi
 
-    for tpl in 1 2 3 4; do
+    for tpl in 0.5 1 2 3 4; do
         local vals t_swap t_pct t_swp
         vals=$(get_template_values "$tpl")
         read -r t_swap t_pct t_swp <<< "$vals"
@@ -206,10 +210,10 @@ print_templates_table() {
     done
 
     echo -e "  ${DIM}├──────┼──────────────┼───────────┼───────┼──────────┼────────────┤${NC}"
-    echo -e "  ${DIM}│${NC}  ${MAGENTA}5${NC}   ${DIM}│${NC} ${MAGENTA}Manual input — set each parameter yourself${NC}                    ${DIM}│${NC}"
+    echo -e "  ${DIM}│${NC}  ${MAGENTA}6${NC}   ${DIM}│${NC} ${MAGENTA}Manual input — set each parameter yourself${NC}                    ${DIM}│${NC}"
     echo -e "  ${DIM}└──────┴──────────────┴───────────┴───────┴──────────┴────────────┘${NC}"
     echo ""
-    echo -e "  ${DIM}Template 1 = 1GB RAM VPS, 2 = 2GB, 3 = 3GB, 4 = 4GB${NC}"
+    echo -e "  ${DIM}Template 0.5 = 512MB RAM VPS, 1 = 1GB, 2 = 2GB, 3 = 3GB, 4 = 4GB${NC}"
 }
 
 # Read a value with default and hint
@@ -234,11 +238,11 @@ interactive_wizard() {
     print_templates_table
 
     local choice
-    read -rp "$(echo -e "  ${BOLD}Select template (1-5):${NC} ")" choice
+    read -rp "$(echo -e "  ${BOLD}Select template (0.5, 1-4, or 6 for manual):${NC} ")" choice
     echo ""
 
     case "$choice" in
-        1|2|3|4)
+        0.5|1|2|3|4)
             apply_template "$choice"
             log_info "Template $choice applied"
 
@@ -249,7 +253,7 @@ interactive_wizard() {
                 interactive_edit_params
             fi
             ;;
-        5)
+        6)
             log_info "Manual configuration selected"
             echo ""
             interactive_manual_input
