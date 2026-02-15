@@ -185,9 +185,9 @@ print_templates_table() {
     echo ""
     echo -e "${BOLD}  Available templates:${NC}"
     echo ""
-    echo -e "  ${DIM}┌──────┬──────────────┬───────────┬───────┬──────────┬────────────┐${NC}"
-    echo -e "  ${DIM}│${NC} ${BOLD}  #  ${NC}${DIM}│${NC} ${BOLD}  Swapfile   ${NC}${DIM}│${NC} ${BOLD} zram %   ${NC}${DIM}│${NC} ${BOLD}ALGO ${NC}${DIM}│${NC} ${BOLD}PRIORITY ${NC}${DIM}│${NC} ${BOLD}swappiness ${NC}${DIM}│${NC}"
-    echo -e "  ${DIM}├──────┼──────────────┼───────────┼───────┼──────────┼────────────┤${NC}"
+    echo -e "  ${DIM}┌──────┬────────┬──────────────┬───────────┬───────┬──────────┬────────────┐${NC}"
+    echo -e "  ${DIM}│${NC} ${BOLD}  #  ${NC}${DIM}│${NC} ${BOLD} RAM  ${NC}${DIM}│${NC} ${BOLD}  Swapfile   ${NC}${DIM}│${NC} ${BOLD} zram %   ${NC}${DIM}│${NC} ${BOLD}ALGO ${NC}${DIM}│${NC} ${BOLD}PRIORITY ${NC}${DIM}│${NC} ${BOLD}swappiness ${NC}${DIM}│${NC}"
+    echo -e "  ${DIM}├──────┼────────┼──────────────┼───────────┼───────┼──────────┼────────────┤${NC}"
 
     local recommended=""
     if   (( ram_mb <= 640  )); then recommended=0.5
@@ -198,22 +198,25 @@ print_templates_table() {
     fi
 
     for tpl in 0.5 1 2 3 4; do
-        local vals t_swap t_pct t_swp
+        local vals t_swap t_pct t_swp t_ram
         vals=$(get_template_values "$tpl")
         read -r t_swap t_pct t_swp <<< "$vals"
+        case "$tpl" in
+            0.5) t_ram="512MB" ;;
+            *)   t_ram="${tpl}GB"  ;;
+        esac
         local marker=""
         if [[ "$tpl" == "$recommended" ]]; then
             marker=" ${GREEN}<< recommended${NC}"
         fi
-        printf "  ${DIM}│${NC} %-3s  ${DIM}│${NC} %4s MB      ${DIM}│${NC}   %3s%%    ${DIM}│${NC} zstd  ${DIM}│${NC}   100    ${DIM}│${NC}    %3s     ${DIM}│${NC}%b\n" \
-            "$tpl" "$t_swap" "$t_pct" "$t_swp" "$marker"
+        printf "  ${DIM}│${NC} %-3s  ${DIM}│${NC} %-5s ${DIM}│${NC} %4s MB      ${DIM}│${NC}   %3s%%    ${DIM}│${NC} zstd  ${DIM}│${NC}   100    ${DIM}│${NC}    %3s     ${DIM}│${NC}%b\n" \
+            "$tpl" "$t_ram" "$t_swap" "$t_pct" "$t_swp" "$marker"
     done
 
-    echo -e "  ${DIM}├──────┼──────────────┼───────────┼───────┼──────────┼────────────┤${NC}"
-    echo -e "  ${DIM}│${NC}  ${MAGENTA}6${NC}   ${DIM}│${NC} ${MAGENTA}Manual input — set each parameter yourself${NC}                    ${DIM}│${NC}"
-    echo -e "  ${DIM}└──────┴──────────────┴───────────┴───────┴──────────┴────────────┘${NC}"
+    echo -e "  ${DIM}├──────┼────────┼──────────────┼───────────┼───────┼──────────┼────────────┤${NC}"
+    echo -e "  ${DIM}│${NC}  ${MAGENTA}6${NC}   ${DIM}│${NC} ${MAGENTA}Manual input — set each parameter yourself${NC}                              ${DIM}│${NC}"
+    echo -e "  ${DIM}└──────┴────────┴──────────────┴───────────┴───────┴──────────┴────────────┘${NC}"
     echo ""
-    echo -e "  ${DIM}Template 0.5 = 512MB RAM VPS, 1 = 1GB, 2 = 2GB, 3 = 3GB, 4 = 4GB${NC}"
 }
 
 # Read a value with default and hint
