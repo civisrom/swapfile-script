@@ -519,19 +519,13 @@ setup_swapfile() {
         swapoff "$SWAPFILE_PATH" 2>/dev/null || true
     fi
 
-    # Create swap file — prefer fallocate (faster), fallback to dd
+    # Create swap file
     log_info "Creating ${SWAPFILE_SIZE_MB}MB swap file at $SWAPFILE_PATH..."
     if [[ "${BTRFS_SWAP:-}" == true ]]; then
-        # btrfs requires dd, not fallocate
         truncate -s 0 "$SWAPFILE_PATH"
         chattr +C "$SWAPFILE_PATH" 2>/dev/null || true
-        dd if=/dev/zero of="$SWAPFILE_PATH" bs=1M count="$SWAPFILE_SIZE_MB" status=progress 2>&1
-    elif fallocate -l "${SWAPFILE_SIZE_MB}M" "$SWAPFILE_PATH" 2>/dev/null; then
-        log_info "Created via fallocate (fast)"
-    else
-        log_info "fallocate failed, falling back to dd..."
-        dd if=/dev/zero of="$SWAPFILE_PATH" bs=1M count="$SWAPFILE_SIZE_MB" status=progress 2>&1
     fi
+    dd if=/dev/zero of="$SWAPFILE_PATH" bs=1M count="$SWAPFILE_SIZE_MB" status=progress 2>&1
 
     # Set permissions
     chmod 600 "$SWAPFILE_PATH"
