@@ -45,7 +45,7 @@ Usage: sudo bash swap-setup.sh [OPTIONS]
 Without options the script starts an interactive wizard.
 
 Options:
-  --ram N             Use preset template for N GB RAM (0.5, 1, 2, 3, 4)
+  --ram N             Use preset template for N GB RAM (0.5, 1, 2, 3, 4, 6, 8)
   --swapfile-size MB  Swap file size in MB (overrides template)
   --zram-percent N    zram size as % of RAM (overrides template)
   --zram-algo ALGO    zram compression algorithm (default: zstd)
@@ -62,6 +62,8 @@ RAM Templates:
   --ram 2     2 GB RAM:   swapfile 1024MB, zram 75%,  swappiness 100
   --ram 3     3 GB RAM:   swapfile 1024MB, zram 60%,  swappiness 80
   --ram 4     4 GB RAM:   swapfile 1536MB, zram 50%,  swappiness 80
+  --ram 6     6 GB RAM:   swapfile 2048MB, zram 40%,  swappiness 60
+  --ram 8     8 GB RAM:   swapfile 2048MB, zram 25%,  swappiness 60
 
 Examples:
   sudo bash swap-setup.sh                     # interactive wizard
@@ -78,6 +80,44 @@ log_info()    { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $*"; }
 log_section() { echo -e "\n${BOLD}${CYAN}── $* ──${NC}"; }
+
+VALID_ZRAM_ALGOS="zstd lz4 lzo lzo-rle lz4hc zlib 842"
+
+validate_positive_int() {
+    local name="$1" value="$2"
+    if ! [[ "$value" =~ ^[0-9]+$ ]] || (( value <= 0 )); then
+        log_error "$name must be a positive integer, got: '$value'"
+        exit 1
+    fi
+}
+
+validate_zram_algo() {
+    local algo="$1"
+    local valid
+    for valid in $VALID_ZRAM_ALGOS; do
+        [[ "$algo" == "$valid" ]] && return 0
+    done
+    log_error "Invalid zram algorithm: '$algo'. Valid: $VALID_ZRAM_ALGOS"
+    exit 1
+}
+
+validate_all_params() {
+    validate_positive_int "swapfile-size" "$SWAPFILE_SIZE_MB"
+    validate_positive_int "zram-percent" "$ZRAM_PERCENT"
+    validate_positive_int "zram-priority" "$ZRAM_PRIORITY"
+    validate_zram_algo "$ZRAM_ALGO"
+    if ! [[ "$SWAPPINESS" =~ ^[0-9]+$ ]] || (( SWAPPINESS > 200 )); then
+        log_error "swappiness must be 0-200, got: '$SWAPPINESS'"
+        exit 1
+    fi
+    if (( ZRAM_PERCENT > 300 )); then
+        log_warn "zram-percent $ZRAM_PERCENT% is unusually high (>300%), are you sure?"
+    fi
+    if (( ZRAM_PRIORITY > 32767 )); then
+        log_error "zram-priority must be 0-32767, got: $ZRAM_PRIORITY"
+        exit 1
+    fi
+}
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -143,6 +183,8 @@ get_template_values() {
         2)   echo "1024 75 100"  ;;
         3)   echo "1024 60 80"   ;;
         4)   echo "1536 50 80"   ;;
+        6)   echo "2048 40 60"   ;;
+        8)   echo "2048 25 60"   ;;
         *)   echo "" ;;
     esac
 }
@@ -152,7 +194,7 @@ apply_template() {
     local vals
     vals=$(get_template_values "$ram_gb")
     if [[ -z "$vals" ]]; then
-        log_error "Unsupported RAM template: $ram_gb (use 0.5, 1, 2, 3 or 4)"
+        log_error "Unsupported RAM template: $ram_gb (use 0.5, 1, 2, 3, 4, 6 or 8)"
         exit 1
     fi
     local t_swap t_percent t_swappiness
@@ -172,7 +214,9 @@ auto_detect_template() {
     elif (( ram_mb <= 1280 )); then apply_template 1
     elif (( ram_mb <= 2304 )); then apply_template 2
     elif (( ram_mb <= 3328 )); then apply_template 3
-    else                            apply_template 4
+    elif (( ram_mb <= 4500 )); then apply_template 4
+    elif (( ram_mb <= 6500 )); then apply_template 6
+    else                            apply_template 8
     fi
 }
 
@@ -194,16 +238,18 @@ print_templates_table() {
     elif (( ram_mb <= 1280 )); then recommended=1
     elif (( ram_mb <= 2304 )); then recommended=2
     elif (( ram_mb <= 3328 )); then recommended=3
-    else                            recommended=4
+    elif (( ram_mb <= 4500 )); then recommended=4
+    elif (( ram_mb <= 6500 )); then recommended=6
+    else                            recommended=8
     fi
 
-    for tpl in 0.5 1 2 3 4; do
+    for tpl in 0.5 1 2 3 4 6 8; do
         local vals t_swap t_pct t_swp t_ram
         vals=$(get_template_values "$tpl")
         read -r t_swap t_pct t_swp <<< "$vals"
         case "$tpl" in
             0.5) t_ram="512MB" ;;
-            *)   t_ram="${tpl}GB"  ;;
+            *)   t_ram="${tpl} GB"  ;;
         esac
         local marker=""
         if [[ "$tpl" == "$recommended" ]]; then
@@ -214,7 +260,7 @@ print_templates_table() {
     done
 
     echo -e "  ${DIM}├──────┼────────┼──────────────┼───────────┼───────┼──────────┼────────────┤${NC}"
-    echo -e "  ${DIM}│${NC}  ${MAGENTA}6${NC}   ${DIM}│${NC} ${MAGENTA}Manual input — set each parameter yourself${NC}                              ${DIM}│${NC}"
+    echo -e "  ${DIM}│${NC}  ${MAGENTA}9${NC}   ${DIM}│${NC} ${MAGENTA}Manual input — set each parameter yourself${NC}                              ${DIM}│${NC}"
     echo -e "  ${DIM}└──────┴────────┴──────────────┴───────────┴───────┴──────────┴────────────┘${NC}"
     echo ""
 }
@@ -241,11 +287,11 @@ interactive_wizard() {
     print_templates_table
 
     local choice
-    read -rp "$(echo -e "  ${BOLD}Select template (0.5, 1-4, or 6 for manual):${NC} ")" choice
+    read -rp "$(echo -e "  ${BOLD}Select template (0.5, 1-8, or 9 for manual):${NC} ")" choice
     echo ""
 
     case "$choice" in
-        0.5|1|2|3|4)
+        0.5|1|2|3|4|6|8)
             apply_template "$choice"
             log_info "Template $choice applied"
 
@@ -256,7 +302,7 @@ interactive_wizard() {
                 interactive_edit_params
             fi
             ;;
-        6)
+        9)
             log_info "Manual configuration selected"
             echo ""
             interactive_manual_input
@@ -392,10 +438,10 @@ check_existing_swap() {
         has_conflict=true
     fi
 
-    # Check fstab for existing swap entries
-    if grep -q "^[^#].*swap" /etc/fstab 2>/dev/null; then
+    # Check fstab for existing swap entries (match 'swap' in the fs type field)
+    if grep -v '^\s*#' /etc/fstab 2>/dev/null | awk '$3 == "swap"' | grep -q .; then
         log_warn "Existing swap entries in /etc/fstab:"
-        grep "swap" /etc/fstab | grep -v "^#"
+        grep -v '^\s*#' /etc/fstab | awk '$3 == "swap"'
         has_conflict=true
     fi
 
@@ -429,8 +475,43 @@ check_existing_swap() {
 
 # ── Setup functions ──────────────────────────────────────────────────────────
 
+check_disk_space() {
+    local target_dir
+    target_dir=$(dirname "$SWAPFILE_PATH")
+    local available_mb
+    available_mb=$(df -BM --output=avail "$target_dir" 2>/dev/null | tail -1 | tr -d ' M')
+    if [[ -n "$available_mb" ]] && (( available_mb < SWAPFILE_SIZE_MB + 100 )); then
+        log_error "Not enough disk space: need ${SWAPFILE_SIZE_MB}MB + 100MB margin, only ${available_mb}MB available on $target_dir"
+        exit 1
+    fi
+    log_info "Disk space check passed: ${available_mb}MB available, need ${SWAPFILE_SIZE_MB}MB"
+}
+
+check_filesystem_type() {
+    local target_dir fs_type
+    target_dir=$(dirname "$SWAPFILE_PATH")
+    fs_type=$(df -T "$target_dir" 2>/dev/null | awk 'NR==2 {print $2}')
+    case "$fs_type" in
+        btrfs)
+            log_warn "Filesystem is btrfs — swapfile requires 'chattr +C' (no copy-on-write)"
+            log_warn "The script will attempt this automatically"
+            BTRFS_SWAP=true
+            ;;
+        zfs)
+            log_error "ZFS does not support swap files. Use a dedicated zvol instead."
+            exit 1
+            ;;
+        *)
+            log_info "Filesystem: $fs_type (OK for swapfile)"
+            ;;
+    esac
+}
+
 setup_swapfile() {
     log_section "Setting up swap file ($SWAPFILE_SIZE_MB MB)"
+
+    check_disk_space
+    check_filesystem_type
 
     # Deactivate existing swapfile if active
     if swapon --show --noheadings 2>/dev/null | grep -q "$SWAPFILE_PATH"; then
@@ -438,9 +519,19 @@ setup_swapfile() {
         swapoff "$SWAPFILE_PATH" 2>/dev/null || true
     fi
 
-    # Create swap file
+    # Create swap file — prefer fallocate (faster), fallback to dd
     log_info "Creating ${SWAPFILE_SIZE_MB}MB swap file at $SWAPFILE_PATH..."
-    dd if=/dev/zero of="$SWAPFILE_PATH" bs=1M count="$SWAPFILE_SIZE_MB" status=progress 2>&1
+    if [[ "${BTRFS_SWAP:-}" == true ]]; then
+        # btrfs requires dd, not fallocate
+        truncate -s 0 "$SWAPFILE_PATH"
+        chattr +C "$SWAPFILE_PATH" 2>/dev/null || true
+        dd if=/dev/zero of="$SWAPFILE_PATH" bs=1M count="$SWAPFILE_SIZE_MB" status=progress 2>&1
+    elif fallocate -l "${SWAPFILE_SIZE_MB}M" "$SWAPFILE_PATH" 2>/dev/null; then
+        log_info "Created via fallocate (fast)"
+    else
+        log_info "fallocate failed, falling back to dd..."
+        dd if=/dev/zero of="$SWAPFILE_PATH" bs=1M count="$SWAPFILE_SIZE_MB" status=progress 2>&1
+    fi
 
     # Set permissions
     chmod 600 "$SWAPFILE_PATH"
@@ -460,6 +551,10 @@ setup_swapfile() {
 
 update_fstab() {
     log_info "Updating /etc/fstab..."
+
+    # Backup fstab before modifying
+    cp /etc/fstab /etc/fstab.bak.$(date +%Y%m%d%H%M%S)
+    log_info "Backed up /etc/fstab"
 
     # Remove any existing swap entries for our swapfile
     if grep -q "$SWAPFILE_PATH" /etc/fstab 2>/dev/null; then
@@ -587,6 +682,12 @@ remove_swap() {
         log_info "Stopped zramswap service"
     fi
 
+    # Remove zramswap config
+    if [[ -f /etc/default/zramswap ]]; then
+        rm -f /etc/default/zramswap
+        log_info "Removed /etc/default/zramswap"
+    fi
+
     # Remove swappiness config
     if [[ -f /etc/sysctl.d/99-swappiness.conf ]]; then
         rm -f /etc/sysctl.d/99-swappiness.conf
@@ -633,20 +734,33 @@ show_plan() {
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 
+require_arg() {
+    if [[ $# -lt 2 || "$2" == --* ]]; then
+        log_error "Option $1 requires an argument"
+        exit 1
+    fi
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --ram)
+                require_arg "$@"
                 RAM_TEMPLATE="$2"; shift 2 ;;
             --swapfile-size)
+                require_arg "$@"
                 SWAPFILE_SIZE_MB="$2"; shift 2 ;;
             --zram-percent)
+                require_arg "$@"
                 ZRAM_PERCENT="$2"; shift 2 ;;
             --zram-algo)
+                require_arg "$@"
                 ZRAM_ALGO="$2"; shift 2 ;;
             --zram-priority)
+                require_arg "$@"
                 ZRAM_PRIORITY="$2"; shift 2 ;;
             --swappiness)
+                require_arg "$@"
                 SWAPPINESS="$2"; shift 2 ;;
             --yes)
                 AUTO_YES=true; shift ;;
@@ -716,6 +830,9 @@ main() {
     # Ensure all values are set (fallback for any empty)
     ZRAM_ALGO="${ZRAM_ALGO:-zstd}"
     ZRAM_PRIORITY="${ZRAM_PRIORITY:-100}"
+
+    # Validate all parameters before proceeding
+    validate_all_params
 
     check_existing_swap
     show_plan
