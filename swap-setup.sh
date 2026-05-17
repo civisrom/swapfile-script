@@ -38,6 +38,7 @@ ACTION="install"
 HAS_INSTALL_OPTIONS=false
 COMPRESSION_RATIO_ESTIMATE=3
 BTRFS_SWAP=false
+ASK_VALUE_USED_DEFAULT=false
 
 # ── Functions ────────────────────────────────────────────────────────────────
 
@@ -123,19 +124,27 @@ validate_zram_percent() {
     fi
 }
 
-validate_all_params() {
-    validate_positive_int "swapfile-size" "$SWAPFILE_SIZE_MB"
-    validate_zram_percent
+validate_zram_priority_value() {
     validate_nonnegative_int "zram-priority" "$ZRAM_PRIORITY"
-    validate_zram_algo "$ZRAM_ALGO"
-    if ! [[ "$SWAPPINESS" =~ ^[0-9]+$ ]] || (( SWAPPINESS > 200 )); then
-        log_error "swappiness must be 0-200, got: '$SWAPPINESS'"
-        exit 1
-    fi
     if (( ZRAM_PRIORITY > 32767 )); then
         log_error "zram-priority must be 0-32767, got: $ZRAM_PRIORITY"
         exit 1
     fi
+}
+
+validate_swappiness_value() {
+    if ! [[ "$SWAPPINESS" =~ ^[0-9]+$ ]] || (( SWAPPINESS > 200 )); then
+        log_error "swappiness must be 0-200, got: '$SWAPPINESS'"
+        exit 1
+    fi
+}
+
+validate_all_params() {
+    validate_positive_int "swapfile-size" "$SWAPFILE_SIZE_MB"
+    validate_zram_percent
+    validate_zram_priority_value
+    validate_zram_algo "$ZRAM_ALGO"
+    validate_swappiness_value
 }
 
 check_root() {
@@ -306,7 +315,7 @@ print_templates_table() {
     ram_mb=$(get_total_ram_mb)
 
     echo ""
-    echo -e "${BOLD}  Available templates:${NC}"
+    echo -e "${BOLD}  Available RAM templates:${NC}"
     echo ""
     echo -e "  ${DIM}┌──────┬────────┬──────────────┬───────────┬───────┬──────────┬────────────┐${NC}"
     echo -e "  ${DIM}│${NC} ${BOLD}  #  ${NC}${DIM}│${NC} ${BOLD} RAM  ${NC}${DIM}│${NC} ${BOLD}  Swapfile   ${NC}${DIM}│${NC} ${BOLD} zram %   ${NC}${DIM}│${NC} ${BOLD}ALGO ${NC}${DIM}│${NC} ${BOLD}PRIORITY ${NC}${DIM}│${NC} ${BOLD}swappiness ${NC}${DIM}│${NC}"
@@ -339,7 +348,7 @@ print_templates_table() {
     done
 
     echo -e "  ${DIM}├──────┼────────┼──────────────┼───────────┼───────┼──────────┼────────────┤${NC}"
-    echo -e "  ${DIM}│${NC}  ${MAGENTA}9${NC}   ${DIM}│${NC} ${MAGENTA}Manual input — set each parameter yourself${NC}                              ${DIM}│${NC}"
+    echo -e "  ${DIM}│${NC}  ${MAGENTA}9${NC}   ${DIM}│${NC} ${MAGENTA}Manual input — configure every parameter${NC}                                ${DIM}│${NC}"
     echo -e "  ${DIM}└──────┴────────┴──────────────┴───────────┴───────┴──────────┴────────────┘${NC}"
     echo ""
 }
@@ -354,7 +363,12 @@ ask_value() {
 
     echo -e "  ${DIM}${hint}${NC}" >&2
     read -rp "$(echo -e "  ${BOLD}${prompt}${NC} [${GREEN}${default}${NC}]: ")" result
-    result="${result:-$default}"
+    if [[ -z "$result" ]]; then
+        ASK_VALUE_USED_DEFAULT=true
+        result="$default"
+    else
+        ASK_VALUE_USED_DEFAULT=false
+    fi
     echo "$result"
 }
 
@@ -366,7 +380,7 @@ interactive_wizard() {
     print_templates_table
 
     local choice
-    read -rp "$(echo -e "  ${BOLD}Select template (0.5, 1-8, or 9 for manual):${NC} ")" choice
+    read -rp "$(echo -e "  ${BOLD}Select template (0.5, 1, 2, 3, 4, 6, 8; 9 for manual):${NC} ")" choice
     echo ""
 
     case "$choice" in
@@ -375,7 +389,7 @@ interactive_wizard() {
             log_info "Template $choice applied"
 
             echo ""
-            echo -e "  ${YELLOW}Want to adjust individual parameters?${NC}"
+            echo -e "  ${YELLOW}Adjust individual parameters before installing?${NC}"
             read -rp "$(echo -e "  ${BOLD}Edit parameters? [y/N]:${NC} ")" edit_confirm
             if [[ "$edit_confirm" =~ ^[Yy]$ ]]; then
                 interactive_edit_params
@@ -404,7 +418,7 @@ interactive_manual_input() {
     # ── Swapfile size ────────────────────────────────────────────────────────
     echo -e "  ${BOLD}1. Swap file size (MB)${NC}"
     SWAPFILE_SIZE_MB=$(ask_value "   Swapfile size MB" "$SWAPFILE_SIZE_MB" \
-        "   Recommended template for this system: ${SWAPFILE_SIZE_MB} MB")
+        "   Template recommendation for detected RAM: ${SWAPFILE_SIZE_MB} MB. Larger file = more emergency swap, but uses disk space.")
     echo ""
 
     # ── ALGO ─────────────────────────────────────────────────────────────────
@@ -413,7 +427,12 @@ interactive_manual_input() {
     echo -e "  ${DIM}   zstd  — best compression ratio (~3:1), moderate CPU (recommended 2025-2026)${NC}"
     echo -e "  ${DIM}   lz4   — fastest, lower compression (~2:1), good for weak CPU${NC}"
     echo -e "  ${DIM}   lzo   — legacy, balanced${NC}"
-    ZRAM_ALGO=$(ask_value "   ALGO" "zstd" "")
+    ZRAM_ALGO=$(ask_value "   ALGO" "$ZRAM_ALGO" \
+        "   Press Enter to keep the template default. If default is unsupported, the script can choose a safe supported fallback.")
+    if [[ "$ASK_VALUE_USED_DEFAULT" != true ]]; then
+        ZRAM_ALGO_EXPLICIT=true
+    fi
+    validate_zram_algo "$ZRAM_ALGO"
     echo ""
 
     # ── PERCENT ──────────────────────────────────────────────────────────────
@@ -421,7 +440,7 @@ interactive_manual_input() {
     zram_size_mb=$(( ram_mb * ZRAM_PERCENT / 100 ))
     echo -e "  ${DIM}   With PERCENT=${ZRAM_PERCENT} on your ${ram_mb}MB RAM -> zram swap device ~${zram_size_mb} MB${NC}"
     ZRAM_PERCENT=$(ask_value "   PERCENT" "$ZRAM_PERCENT" \
-        "   Range: 25-200 normally, hard limit 300. Recommended template for this system: ${ZRAM_PERCENT}%")
+        "   Template recommendation: ${ZRAM_PERCENT}%. Normal range: 25-200; hard limit: 300. This is logical zram swap size, not extra RAM.")
     validate_zram_percent
     echo ""
 
@@ -433,13 +452,15 @@ interactive_manual_input() {
     # ── PRIORITY ─────────────────────────────────────────────────────────────
     echo -e "  ${BOLD}4. zram swap priority (PRIORITY)${NC}"
     ZRAM_PRIORITY=$(ask_value "   PRIORITY" "100" \
-        "   Higher = used first. Disk swap has priority ${SWAP_PRIORITY}. Range: 0-32767")
+        "   Higher priority is used first. Keep zram above disk swap (${SWAP_PRIORITY}). Valid range: 0-32767.")
+    validate_zram_priority_value
     echo ""
 
     # ── swappiness ───────────────────────────────────────────────────────────
     echo -e "  ${BOLD}5. vm.swappiness${NC}"
     SWAPPINESS=$(ask_value "   swappiness" "$SWAPPINESS" \
-        "   How eagerly kernel uses swap. Range: 0-200. Template default for this system: ${SWAPPINESS}")
+        "   Template default: ${SWAPPINESS}. Higher values make Linux use zram earlier. Valid range: 0-200.")
+    validate_swappiness_value
     echo ""
 }
 
@@ -454,14 +475,18 @@ interactive_edit_params() {
     # ── Swapfile size ────────────────────────────────────────────────────────
     echo -e "  ${BOLD}1. Swap file size${NC}"
     SWAPFILE_SIZE_MB=$(ask_value "   Swapfile size MB" "$SWAPFILE_SIZE_MB" \
-        "   Recommended: 1024 for 512MB, 512 for 1GB, 1024 for 2GB, 1024-1536 for 3-4GB")
+        "   Current value from selected template or previous input. Press Enter to keep it.")
     echo ""
 
     # ── ALGO ─────────────────────────────────────────────────────────────────
     echo -e "  ${BOLD}2. Compression algorithm (ALGO)${NC}"
     echo -e "  ${DIM}   Available: ${NC}${GREEN}zstd${NC}${DIM} | lz4 | lzo | lzo-rle | lz4hc | zlib | 842${NC}"
     ZRAM_ALGO=$(ask_value "   ALGO" "$ZRAM_ALGO" \
-        "   zstd=best ratio, lz4=fastest, lzo=legacy balanced")
+        "   zstd=best ratio, lz4=fastest. If you type a value here, unsupported algorithms will be treated as errors.")
+    if [[ "$ASK_VALUE_USED_DEFAULT" != true ]]; then
+        ZRAM_ALGO_EXPLICIT=true
+    fi
+    validate_zram_algo "$ZRAM_ALGO"
     echo ""
 
     # ── PERCENT ──────────────────────────────────────────────────────────────
@@ -469,24 +494,26 @@ interactive_edit_params() {
     zram_size_mb=$(( ram_mb * ZRAM_PERCENT / 100 ))
     echo -e "  ${DIM}   Currently ${ZRAM_PERCENT}% = ~${zram_size_mb} MB on your ${ram_mb} MB RAM${NC}"
     ZRAM_PERCENT=$(ask_value "   PERCENT" "$ZRAM_PERCENT" \
-        "   Range: 25-200 normally, hard limit 300. Higher = larger logical zram swap device")
+        "   Normal range: 25-200; hard limit: 300. Higher = larger logical zram swap device.")
     validate_zram_percent
     echo ""
 
     zram_size_mb=$(( ram_mb * ZRAM_PERCENT / 100 ))
-    echo -e "  ${DIM}   -> zram will be ~${zram_size_mb} MB${NC}"
+    echo -e "  ${DIM}   -> zram swap device will be ~${zram_size_mb} MB${NC}"
     echo ""
 
     # ── PRIORITY ─────────────────────────────────────────────────────────────
     echo -e "  ${BOLD}4. zram priority (PRIORITY)${NC}"
     ZRAM_PRIORITY=$(ask_value "   PRIORITY" "$ZRAM_PRIORITY" \
-        "   Higher = used first. Disk swap has priority ${SWAP_PRIORITY}")
+        "   Higher priority is used first. Keep zram above disk swap (${SWAP_PRIORITY}). Valid range: 0-32767.")
+    validate_zram_priority_value
     echo ""
 
     # ── swappiness ───────────────────────────────────────────────────────────
     echo -e "  ${BOLD}5. vm.swappiness${NC}"
     SWAPPINESS=$(ask_value "   swappiness" "$SWAPPINESS" \
-        "   Range: 0-200. With zram recommended: 80-150")
+        "   Valid range: 0-200. Low-RAM templates use 80-100 so zram is used before memory pressure becomes critical.")
+    validate_swappiness_value
     echo ""
 }
 

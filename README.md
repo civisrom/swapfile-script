@@ -54,7 +54,7 @@ sudo bash swap-setup.sh
 ║  RAM:   1024 MB (~1 GB)
 ╚══════════════════════════════════════════════════════╝
 
-  Available templates:
+  Available RAM templates:
 
   ┌──────┬────────┬──────────────┬───────────┬───────┬──────────┬────────────┐
   │  #   │  RAM   │  Swapfile    │  zram %   │ ALGO  │ PRIORITY │ swappiness │
@@ -67,10 +67,10 @@ sudo bash swap-setup.sh
   │  6   │ 6GB    │ 2048 MB      │    40%    │ zstd  │   100    │     60     │
   │  8   │ 8GB    │ 2048 MB      │    25%    │ zstd  │   100    │     60     │
   ├──────┼────────┼──────────────┼───────────┼───────┼──────────┼────────────┤
-  │  9   │ Manual input — set each parameter yourself                        │
+  │  9   │ Manual input — configure every parameter                          │
   └──────┴────────┴──────────────┴───────────┴───────┴──────────┴────────────┘
 
-  Select template (0.5, 1-8, or 9 for manual):
+  Select template (0.5, 1, 2, 3, 4, 6, 8; 9 for manual):
 ```
 
 ### Выбор шаблона (0.5, 1, 2, 3, 4, 6, 8)
@@ -78,7 +78,7 @@ sudo bash swap-setup.sh
 При выборе шаблона скрипт спросит, хотите ли вы подкорректировать параметры:
 
 ```
-  Want to adjust individual parameters?
+  Adjust individual parameters before installing?
   Edit parameters? [y/N]:
 ```
 
@@ -90,7 +90,7 @@ sudo bash swap-setup.sh
 
 ```
   1. Swap file size (MB)
-     Recommended template for this system: 512 MB
+     Template recommendation for detected RAM: 512 MB. Larger file = more emergency swap, but uses disk space.
      Swapfile size MB [512]:
 
   2. Compression algorithm (ALGO)
@@ -98,20 +98,21 @@ sudo bash swap-setup.sh
      zstd  — best compression ratio (~3:1), moderate CPU (recommended 2025-2026)
      lz4   — fastest, lower compression (~2:1), good for weak CPU
      lzo   — legacy, balanced
+     Press Enter to keep the template default. If default is unsupported, the script can choose a safe supported fallback.
      ALGO [zstd]:
 
   3. zram size as % of RAM (PERCENT)
      With PERCENT=100 on your 1024MB RAM -> zram swap device ~1024 MB
-     Range: 25-200 normally, hard limit 300. Recommended template for this system: 100%
+     Template recommendation: 100%. Normal range: 25-200; hard limit: 300. This is logical zram swap size, not extra RAM.
      PERCENT [100]:
      -> zram swap device will be ~1024 MB (100% of 1024 MB)
 
   4. zram swap priority (PRIORITY)
-     Higher = used first. Disk swap has priority -2. Range: 0-32767
+     Higher priority is used first. Keep zram above disk swap (-2). Valid range: 0-32767.
      PRIORITY [100]:
 
   5. vm.swappiness
-     How eagerly kernel uses swap. Range: 0-200. Template default for this system: 100
+     Template default: 100. Higher values make Linux use zram earlier. Valid range: 0-200.
      swappiness [100]:
 ```
 
