@@ -13,14 +13,14 @@ wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/instal
 С параметрами (без интерактивного режима):
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh | sudo bash -s -- --ram 1
+wget -qO- https://raw.githubusercontent.com/civisrom/swapfile-script/main/install.sh | sudo bash -s -- --lang ru --ram 1
 ```
 
 После установки скрипт доступен как системная команда:
 
 ```bash
-sudo swap-setup.sh --status
-sudo swap-setup.sh --remove
+sudo swap-setup.sh --lang ru --status
+sudo swap-setup.sh --lang ru --remove
 ```
 
 ## Что делает скрипт
@@ -37,10 +37,26 @@ sudo swap-setup.sh --remove
 
 ## Интерактивный режим
 
-При запуске без параметров скрипт запускает интерактивный мастер настройки:
+При запуске без параметров скрипт сначала спрашивает язык интерфейса, затем запускает интерактивный мастер настройки:
 
 ```bash
 sudo bash swap-setup.sh
+```
+
+Выбор языка:
+
+```
+Select language / Выберите язык:
+  1) English
+  2) Русский
+Language [1/en, 2/ru; default: en]:
+```
+
+Для неинтерактивного запуска язык задаётся явно:
+
+```bash
+sudo bash swap-setup.sh --lang ru --ram 1 --yes
+sudo bash swap-setup.sh --lang en --status
 ```
 
 Скрипт покажет:
@@ -155,6 +171,7 @@ Usage: sudo bash swap-setup.sh [OPTIONS]
 Без опций — запускается интерактивный мастер.
 
 Options:
+  --lang en|ru        Язык вывода (en или ru)
   --ram N             Шаблон для N ГБ RAM (0.5, 1, 2, 3, 4, 6, 8)
   --swapfile-size MB  Размер swap-файла в МБ (переопределяет шаблон)
   --zram-percent N    Размер zram как % от RAM (переопределяет шаблон)
@@ -173,23 +190,26 @@ Options:
 # Интерактивный мастер (рекомендуется)
 sudo bash swap-setup.sh
 
+# Интерактивный мастер сразу на русском
+sudo bash swap-setup.sh --lang ru
+
 # Шаблон для 1 ГБ RAM VPS
-sudo bash swap-setup.sh --ram 1
+sudo bash swap-setup.sh --lang ru --ram 1
 
 # Шаблон + переопределение параметров
-sudo bash swap-setup.sh --ram 1 --zram-percent 150 --swappiness 120
+sudo bash swap-setup.sh --lang ru --ram 1 --zram-percent 150 --swappiness 120
 
 # Полностью ручная настройка через CLI
-sudo bash swap-setup.sh --swapfile-size 512 --zram-percent 80 --zram-algo lz4 --swappiness 120
+sudo bash swap-setup.sh --lang ru --swapfile-size 512 --zram-percent 80 --zram-algo lz4 --swappiness 120
 
 # Автоматический режим без подтверждений (для скриптов/ansible)
-sudo bash swap-setup.sh --ram 1 --yes
+sudo bash swap-setup.sh --lang ru --ram 1 --yes
 
 # Проверка текущего статуса
-sudo bash swap-setup.sh --status
+sudo bash swap-setup.sh --lang ru --status
 
 # Удаление конфигурации
-sudo bash swap-setup.sh --remove
+sudo bash swap-setup.sh --lang ru --remove
 ```
 
 ## Что проверить после установки
