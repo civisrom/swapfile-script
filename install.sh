@@ -22,6 +22,19 @@ NC='\033[0m'
 log_info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
+install_package() {
+    local package="$1"
+
+    if ! command -v apt-get &>/dev/null; then
+        log_error "apt-get not found. This installer supports Debian/Ubuntu systems."
+        exit 1
+    fi
+
+    log_info "Installing $package..."
+    apt-get update -qq
+    apt-get install -y -qq "$package"
+}
+
 # Check root
 if [[ $EUID -ne 0 ]]; then
     log_error "Run as root: sudo bash install.sh"
@@ -30,12 +43,9 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Check dependencies
-for cmd in wget; do
-    if ! command -v "$cmd" &>/dev/null; then
-        log_info "Installing $cmd..."
-        apt-get update -qq && apt-get install -y -qq "$cmd"
-    fi
-done
+if ! command -v wget &>/dev/null; then
+    install_package wget
+fi
 
 echo ""
 echo -e "${BOLD}Downloading ${SCRIPT_NAME}...${NC}"
@@ -46,9 +56,14 @@ if [[ ! -s "${TMP_DIR}/${SCRIPT_NAME}" ]]; then
     exit 1
 fi
 
+if ! bash -n "${TMP_DIR}/${SCRIPT_NAME}"; then
+    log_error "Downloaded ${SCRIPT_NAME} failed bash syntax validation"
+    exit 1
+fi
+
 # Install to system path
-cp "${TMP_DIR}/${SCRIPT_NAME}" "${INSTALL_DIR}/${SCRIPT_NAME}"
-chmod +x "${INSTALL_DIR}/${SCRIPT_NAME}"
+mkdir -p "$INSTALL_DIR"
+install -m 0755 "${TMP_DIR}/${SCRIPT_NAME}" "${INSTALL_DIR}/${SCRIPT_NAME}"
 log_info "Installed to ${INSTALL_DIR}/${SCRIPT_NAME}"
 echo -e "${YELLOW}You can run it later as:${NC} sudo swap-setup.sh [options]"
 echo ""

@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # swap-setup.sh — Automated hybrid swap (swapfile + zram) setup for Debian/Ubuntu VPS
-# Supports RAM templates: 512MB, 1GB, 2GB, 3GB, 4GB, interactive wizard, and CLI flags
+# Supports RAM templates: 512MB, 1GB, 2GB, 3GB, 4GB, 6GB, 8GB, interactive wizard, and CLI flags
 #
 # Usage:
 #   sudo bash swap-setup.sh                  # interactive wizard
@@ -17,7 +17,6 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 DIM='\033[2m'
@@ -29,12 +28,16 @@ SWAPFILE_SIZE_MB=""
 ZRAM_ALGO=""
 ZRAM_PERCENT=""
 ZRAM_PRIORITY=""
+ZRAM_ALGO_EXPLICIT=false
 SWAP_PRIORITY=-2
 SWAPPINESS=""
 RAM_TEMPLATE=""
 AUTO_YES=false
 INTERACTIVE=false
 ACTION="install"
+HAS_INSTALL_OPTIONS=false
+COMPRESSION_RATIO_ESTIMATE=3
+BTRFS_SWAP=false
 
 # ── Functions ────────────────────────────────────────────────────────────────
 
@@ -91,6 +94,14 @@ validate_positive_int() {
     fi
 }
 
+validate_nonnegative_int() {
+    local name="$1" value="$2"
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+        log_error "$name must be a non-negative integer, got: '$value'"
+        exit 1
+    fi
+}
+
 validate_zram_algo() {
     local algo="$1"
     local valid
@@ -101,17 +112,25 @@ validate_zram_algo() {
     exit 1
 }
 
+validate_zram_percent() {
+    validate_positive_int "zram-percent" "$ZRAM_PERCENT"
+    if (( ZRAM_PERCENT > 300 )); then
+        log_error "zram-percent must be 1-300, got: $ZRAM_PERCENT"
+        exit 1
+    fi
+    if (( ZRAM_PERCENT > 200 )); then
+        log_warn "zram-percent $ZRAM_PERCENT% is unusually high (>200%)"
+    fi
+}
+
 validate_all_params() {
     validate_positive_int "swapfile-size" "$SWAPFILE_SIZE_MB"
-    validate_positive_int "zram-percent" "$ZRAM_PERCENT"
-    validate_positive_int "zram-priority" "$ZRAM_PRIORITY"
+    validate_zram_percent
+    validate_nonnegative_int "zram-priority" "$ZRAM_PRIORITY"
     validate_zram_algo "$ZRAM_ALGO"
     if ! [[ "$SWAPPINESS" =~ ^[0-9]+$ ]] || (( SWAPPINESS > 200 )); then
         log_error "swappiness must be 0-200, got: '$SWAPPINESS'"
         exit 1
-    fi
-    if (( ZRAM_PERCENT > 300 )); then
-        log_warn "zram-percent $ZRAM_PERCENT% is unusually high (>300%), are you sure?"
     fi
     if (( ZRAM_PRIORITY > 32767 )); then
         log_error "zram-priority must be 0-32767, got: $ZRAM_PRIORITY"
@@ -124,6 +143,60 @@ check_root() {
         log_error "This script must be run as root (use sudo)"
         exit 1
     fi
+}
+
+require_commands() {
+    local missing=() cmd
+    for cmd in "$@"; do
+        if ! command -v "$cmd" &>/dev/null; then
+            missing+=("$cmd")
+        fi
+    done
+
+    if (( ${#missing[@]} > 0 )); then
+        log_error "Missing required command(s): ${missing[*]}"
+        exit 1
+    fi
+}
+
+preflight_checks() {
+    log_section "Preflight checks"
+
+    require_commands awk cat chmod chown cp date dd df dirname dpkg du free grep mktemp mkswap mv rm sed swapon swapoff sysctl tr xargs
+
+    if ! command -v systemctl &>/dev/null; then
+        log_error "systemctl not found. This script manages zram through the zramswap systemd service."
+        exit 1
+    fi
+
+    local target_dir
+    target_dir=$(dirname "$SWAPFILE_PATH")
+    if [[ ! -d "$target_dir" ]]; then
+        log_error "Swapfile directory does not exist: $target_dir"
+        exit 1
+    fi
+    if [[ ! -f /etc/fstab || ! -r /etc/fstab || ! -w /etc/fstab ]]; then
+        log_error "/etc/fstab must exist and be readable/writable"
+        exit 1
+    fi
+    if [[ ! -d /etc/default || ! -w /etc/default ]]; then
+        log_error "/etc/default must exist and be writable"
+        exit 1
+    fi
+    if [[ ! -d /etc/sysctl.d || ! -w /etc/sysctl.d ]]; then
+        log_error "/etc/sysctl.d must exist and be writable"
+        exit 1
+    fi
+    if [[ -L "$SWAPFILE_PATH" ]]; then
+        log_error "$SWAPFILE_PATH is a symlink. Refusing to use it as a swap file."
+        exit 1
+    fi
+    if [[ -e "$SWAPFILE_PATH" && ! -f "$SWAPFILE_PATH" ]]; then
+        log_error "$SWAPFILE_PATH exists but is not a regular file."
+        exit 1
+    fi
+
+    log_info "Required local commands and paths are available"
 }
 
 get_total_ram_mb() {
@@ -146,6 +219,7 @@ get_total_ram_gb_label() {
 
 detect_os() {
     if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
         . /etc/os-release
         echo "${PRETTY_NAME:-${NAME:-Linux} ${VERSION_ID:-}}"
     else
@@ -218,6 +292,11 @@ auto_detect_template() {
     elif (( ram_mb <= 6500 )); then apply_template 6
     else                            apply_template 8
     fi
+}
+
+estimate_compressed_ram_mb() {
+    local logical_mb="$1"
+    echo $(((logical_mb + COMPRESSION_RATIO_ESTIMATE - 1) / COMPRESSION_RATIO_ESTIMATE))
 }
 
 # ── Interactive wizard ───────────────────────────────────────────────────────
@@ -317,14 +396,15 @@ interactive_wizard() {
 interactive_manual_input() {
     local ram_mb zram_size_mb
     ram_mb=$(get_total_ram_mb)
+    auto_detect_template
 
     echo -e "  ${BOLD}${CYAN}Enter parameters for your VPS (RAM: ${ram_mb} MB):${NC}"
     echo ""
 
     # ── Swapfile size ────────────────────────────────────────────────────────
     echo -e "  ${BOLD}1. Swap file size (MB)${NC}"
-    SWAPFILE_SIZE_MB=$(ask_value "   Swapfile size MB" "1024" \
-        "   Recommended: 1024 for 512MB, 512 for 1GB, 1024 for 2GB, 1024-1536 for 3-4GB")
+    SWAPFILE_SIZE_MB=$(ask_value "   Swapfile size MB" "$SWAPFILE_SIZE_MB" \
+        "   Recommended template for this system: ${SWAPFILE_SIZE_MB} MB")
     echo ""
 
     # ── ALGO ─────────────────────────────────────────────────────────────────
@@ -338,15 +418,16 @@ interactive_manual_input() {
 
     # ── PERCENT ──────────────────────────────────────────────────────────────
     echo -e "  ${BOLD}3. zram size as % of RAM (PERCENT)${NC}"
-    zram_size_mb=$(( ram_mb * 75 / 100 ))
-    echo -e "  ${DIM}   With PERCENT=75 on your ${ram_mb}MB RAM -> zram ~${zram_size_mb} MB${NC}"
-    ZRAM_PERCENT=$(ask_value "   PERCENT" "75" \
-        "   Range: 25-200. Recommended: 100 for 1GB, 75 for 2GB, 50-60 for 3-4GB")
+    zram_size_mb=$(( ram_mb * ZRAM_PERCENT / 100 ))
+    echo -e "  ${DIM}   With PERCENT=${ZRAM_PERCENT} on your ${ram_mb}MB RAM -> zram swap device ~${zram_size_mb} MB${NC}"
+    ZRAM_PERCENT=$(ask_value "   PERCENT" "$ZRAM_PERCENT" \
+        "   Range: 25-200 normally, hard limit 300. Recommended template for this system: ${ZRAM_PERCENT}%")
+    validate_zram_percent
     echo ""
 
     # show calculated zram size
     zram_size_mb=$(( ram_mb * ZRAM_PERCENT / 100 ))
-    echo -e "  ${DIM}   -> zram will be ~${zram_size_mb} MB (${ZRAM_PERCENT}% of ${ram_mb} MB)${NC}"
+    echo -e "  ${DIM}   -> zram swap device will be ~${zram_size_mb} MB (${ZRAM_PERCENT}% of ${ram_mb} MB)${NC}"
     echo ""
 
     # ── PRIORITY ─────────────────────────────────────────────────────────────
@@ -357,8 +438,8 @@ interactive_manual_input() {
 
     # ── swappiness ───────────────────────────────────────────────────────────
     echo -e "  ${BOLD}5. vm.swappiness${NC}"
-    SWAPPINESS=$(ask_value "   swappiness" "100" \
-        "   How eagerly kernel uses swap. Range: 0-200. For zram: 80-150 recommended")
+    SWAPPINESS=$(ask_value "   swappiness" "$SWAPPINESS" \
+        "   How eagerly kernel uses swap. Range: 0-200. Template default for this system: ${SWAPPINESS}")
     echo ""
 }
 
@@ -388,7 +469,8 @@ interactive_edit_params() {
     zram_size_mb=$(( ram_mb * ZRAM_PERCENT / 100 ))
     echo -e "  ${DIM}   Currently ${ZRAM_PERCENT}% = ~${zram_size_mb} MB on your ${ram_mb} MB RAM${NC}"
     ZRAM_PERCENT=$(ask_value "   PERCENT" "$ZRAM_PERCENT" \
-        "   Range: 25-200. Higher = more virtual swap via compression")
+        "   Range: 25-200 normally, hard limit 300. Higher = larger logical zram swap device")
+    validate_zram_percent
     echo ""
 
     zram_size_mb=$(( ram_mb * ZRAM_PERCENT / 100 ))
@@ -422,7 +504,7 @@ check_existing_swap() {
         echo ""
 
         # Check if our target swapfile is already active
-        if swapon --show --noheadings 2>/dev/null | grep -q "$SWAPFILE_PATH"; then
+        if is_swapfile_active; then
             log_warn "$SWAPFILE_PATH is already active as swap"
             has_conflict=true
         fi
@@ -439,9 +521,9 @@ check_existing_swap() {
     fi
 
     # Check fstab for existing swap entries (match 'swap' in the fs type field)
-    if grep -v '^\s*#' /etc/fstab 2>/dev/null | awk '$3 == "swap"' | grep -q .; then
+    if fstab_has_swap_entries; then
         log_warn "Existing swap entries in /etc/fstab:"
-        grep -v '^\s*#' /etc/fstab | awk '$3 == "swap"'
+        print_fstab_swap_entries
         has_conflict=true
     fi
 
@@ -457,7 +539,7 @@ check_existing_swap() {
         if [[ "$AUTO_YES" != true ]]; then
             echo -e "${YELLOW}The script will:${NC}"
             echo "  - Deactivate and recreate $SWAPFILE_PATH if it exists"
-            echo "  - Update /etc/fstab (remove old swap entries, add new one)"
+            echo "  - Update /etc/fstab (replace the $SWAPFILE_PATH entry only, keep other swap entries)"
             echo "  - Overwrite /etc/default/zramswap"
             echo ""
             read -rp "Continue? [y/N]: " confirm
@@ -473,6 +555,157 @@ check_existing_swap() {
     fi
 }
 
+is_swapfile_active() {
+    swapon --show --noheadings --raw --output=NAME 2>/dev/null \
+        | awk -v path="$SWAPFILE_PATH" '$1 == path { found = 1 } END { exit !found }'
+}
+
+get_swap_priority() {
+    local path="$1"
+    swapon --show --noheadings --raw --output=NAME,PRIO 2>/dev/null \
+        | awk -v path="$path" '$1 == path { print $2; found = 1 } END { exit !found }'
+}
+
+fstab_has_swap_entries() {
+    awk '!/^[[:space:]]*#/ && $3 == "swap" { found = 1 } END { exit !found }' /etc/fstab 2>/dev/null
+}
+
+print_fstab_swap_entries() {
+    awk '!/^[[:space:]]*#/ && $3 == "swap"' /etc/fstab 2>/dev/null
+}
+
+fstab_has_swapfile_entry() {
+    awk -v path="$SWAPFILE_PATH" \
+        '!/^[[:space:]]*#/ && $1 == path && $3 == "swap" { found = 1 } END { exit !found }' \
+        /etc/fstab 2>/dev/null
+}
+
+backup_fstab() {
+    local backup_path
+    backup_path="/etc/fstab.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a /etc/fstab "$backup_path"
+    log_info "Backed up /etc/fstab to $backup_path"
+}
+
+rewrite_fstab() {
+    local add_swap_entry="$1"
+    local tmp
+    tmp=$(mktemp /etc/fstab.swap-setup.XXXXXX)
+
+    awk -v path="$SWAPFILE_PATH" \
+        '($1 == path && $3 == "swap") { next } { print }' \
+        /etc/fstab > "$tmp"
+
+    if [[ "$add_swap_entry" == true ]]; then
+        printf '%s\n' "$SWAPFILE_PATH none swap sw,pri=$SWAP_PRIORITY 0 0" >> "$tmp"
+    fi
+
+    chmod --reference=/etc/fstab "$tmp"
+    chown --reference=/etc/fstab "$tmp"
+    mv "$tmp" /etc/fstab
+}
+
+restart_zramswap_service() {
+    if ! command -v systemctl &>/dev/null; then
+        log_error "systemctl not found. zram-tools service management requires systemd."
+        return 1
+    fi
+
+    log_info "Enabling zramswap service..."
+    systemctl enable zramswap || return 1
+
+    log_info "Restarting zramswap service..."
+    systemctl restart zramswap || return 1
+    log_info "zramswap service restarted"
+}
+
+stop_disable_zramswap_service() {
+    if ! command -v systemctl &>/dev/null; then
+        log_warn "systemctl not found, skipping zramswap service stop/disable"
+        return
+    fi
+
+    if systemctl stop zramswap 2>/dev/null; then
+        log_info "Stopped zramswap service"
+    else
+        log_warn "zramswap service was not active or could not be stopped"
+    fi
+
+    if systemctl disable zramswap 2>/dev/null; then
+        log_info "Disabled zramswap service"
+    fi
+}
+
+check_zram_kernel_support() {
+    log_section "Checking zram kernel support"
+
+    if ! command -v modprobe &>/dev/null; then
+        log_error "modprobe not found. Cannot load the zram kernel module."
+        exit 1
+    fi
+
+    if ! modprobe zram 2>/dev/null; then
+        log_error "Unable to load the zram kernel module. Check kernel support for zram."
+        exit 1
+    fi
+
+    if [[ ! -r /sys/block/zram0/comp_algorithm ]]; then
+        log_error "Unable to read supported zram compression algorithms from /sys/block/zram0/comp_algorithm"
+        exit 1
+    fi
+
+    local supported
+    supported=$(tr '[]' '  ' < /sys/block/zram0/comp_algorithm | xargs)
+    if algo_in_list "$ZRAM_ALGO" "$supported"; then
+        log_info "zram module is available; algorithm '$ZRAM_ALGO' is supported"
+        return
+    fi
+
+    if [[ "$ZRAM_ALGO_EXPLICIT" == true ]]; then
+        log_error "zram algorithm '$ZRAM_ALGO' is not supported by this kernel. Supported: $supported"
+        exit 1
+    fi
+
+    local fallback
+    for fallback in zstd lz4 lzo-rle lzo zlib 842; do
+        if algo_in_list "$fallback" "$supported"; then
+            log_warn "Default zram algorithm '$ZRAM_ALGO' is not supported by this kernel; using '$fallback' instead"
+            ZRAM_ALGO="$fallback"
+            return
+        fi
+    done
+
+    log_error "No supported zram algorithm found. Kernel reports: $supported"
+    exit 1
+}
+
+algo_in_list() {
+    local needle="$1"
+    local list="$2"
+    local item
+    for item in $list; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+ensure_zram_tools_installed() {
+    if dpkg -l zram-tools 2>/dev/null | grep -q "^ii"; then
+        log_info "zram-tools already installed"
+        return
+    fi
+
+    if ! command -v apt-get &>/dev/null; then
+        log_error "apt-get not found. zram-tools must be installed manually on this system."
+        exit 1
+    fi
+
+    log_info "Installing zram-tools..."
+    apt-get update -qq
+    apt-get install -y -qq zram-tools
+    log_info "zram-tools installed"
+}
+
 # ── Setup functions ──────────────────────────────────────────────────────────
 
 check_disk_space() {
@@ -480,21 +713,33 @@ check_disk_space() {
     target_dir=$(dirname "$SWAPFILE_PATH")
     local available_mb
     available_mb=$(df -BM --output=avail "$target_dir" 2>/dev/null | tail -1 | tr -d ' M')
-    if [[ -n "$available_mb" ]] && (( available_mb < SWAPFILE_SIZE_MB + 100 )); then
-        log_error "Not enough disk space: need ${SWAPFILE_SIZE_MB}MB + 100MB margin, only ${available_mb}MB available on $target_dir"
+    if [[ -z "$available_mb" || ! "$available_mb" =~ ^[0-9]+$ ]]; then
+        log_error "Unable to determine available disk space on $target_dir"
         exit 1
     fi
-    log_info "Disk space check passed: ${available_mb}MB available, need ${SWAPFILE_SIZE_MB}MB"
+    if (( available_mb < SWAPFILE_SIZE_MB + 100 )); then
+        log_error "Not enough disk space for safe staged creation: need ${SWAPFILE_SIZE_MB}MB + 100MB margin free, only ${available_mb}MB available on $target_dir"
+        exit 1
+    fi
+    log_info "Disk space check passed: ${available_mb}MB available, need ${SWAPFILE_SIZE_MB}MB for staged swapfile creation"
 }
 
 check_filesystem_type() {
     local target_dir fs_type
     target_dir=$(dirname "$SWAPFILE_PATH")
+    BTRFS_SWAP=false
     fs_type=$(df -T "$target_dir" 2>/dev/null | awk 'NR==2 {print $2}')
+    if [[ -z "$fs_type" ]]; then
+        log_error "Unable to detect filesystem type for $target_dir"
+        exit 1
+    fi
     case "$fs_type" in
         btrfs)
             log_warn "Filesystem is btrfs — swapfile requires 'chattr +C' (no copy-on-write)"
-            log_warn "The script will attempt this automatically"
+            if ! command -v chattr &>/dev/null; then
+                log_error "chattr not found; cannot safely create a btrfs swapfile without copy-on-write"
+                exit 1
+            fi
             BTRFS_SWAP=true
             ;;
         zfs)
@@ -513,70 +758,114 @@ setup_swapfile() {
     check_disk_space
     check_filesystem_type
 
-    # Deactivate existing swapfile if active
-    if swapon --show --noheadings 2>/dev/null | grep -q "$SWAPFILE_PATH"; then
+    local target_dir tmp_swapfile old_swapfile_backup old_swapfile_active
+    target_dir=$(dirname "$SWAPFILE_PATH")
+    tmp_swapfile=$(mktemp "${target_dir}/.swapfile.new.XXXXXX")
+    old_swapfile_backup=""
+    old_swapfile_active=false
+
+    cleanup_new_swapfile() {
+        [[ -n "${tmp_swapfile:-}" && -e "$tmp_swapfile" ]] && rm -f "$tmp_swapfile"
+    }
+
+    log_info "Creating staged ${SWAPFILE_SIZE_MB}MB swap file at $tmp_swapfile..."
+    chmod 600 "$tmp_swapfile"
+    if [[ "$BTRFS_SWAP" == true ]]; then
+        chattr +C "$tmp_swapfile"
+    fi
+    if ! dd if=/dev/zero of="$tmp_swapfile" bs=1M count="$SWAPFILE_SIZE_MB" conv=fsync status=progress 2>&1; then
+        cleanup_new_swapfile
+        log_error "Failed to create staged swap file"
+        exit 1
+    fi
+    chmod 600 "$tmp_swapfile"
+
+    if ! mkswap "$tmp_swapfile"; then
+        cleanup_new_swapfile
+        log_error "Failed to format staged swap file"
+        exit 1
+    fi
+    log_info "Staged swap file is formatted"
+
+    if is_swapfile_active; then
+        old_swapfile_active=true
         log_info "Deactivating existing $SWAPFILE_PATH..."
-        swapoff "$SWAPFILE_PATH" 2>/dev/null || true
+        if ! swapoff "$SWAPFILE_PATH"; then
+            cleanup_new_swapfile
+            log_error "Failed to deactivate existing $SWAPFILE_PATH; leaving current swapfile unchanged"
+            exit 1
+        fi
     fi
 
-    # Create swap file
-    log_info "Creating ${SWAPFILE_SIZE_MB}MB swap file at $SWAPFILE_PATH..."
-    if [[ "${BTRFS_SWAP:-}" == true ]]; then
-        truncate -s 0 "$SWAPFILE_PATH"
-        chattr +C "$SWAPFILE_PATH" 2>/dev/null || true
+    if [[ -f "$SWAPFILE_PATH" ]]; then
+        old_swapfile_backup="${SWAPFILE_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+        mv "$SWAPFILE_PATH" "$old_swapfile_backup"
+        log_info "Moved old $SWAPFILE_PATH to $old_swapfile_backup"
     fi
-    dd if=/dev/zero of="$SWAPFILE_PATH" bs=1M count="$SWAPFILE_SIZE_MB" status=progress 2>&1
 
-    # Set permissions
-    chmod 600 "$SWAPFILE_PATH"
-    log_info "Permissions set to 600"
+    if ! mv "$tmp_swapfile" "$SWAPFILE_PATH"; then
+        log_error "Failed to move staged swapfile into place; attempting to restore previous swapfile"
+        if [[ -n "$old_swapfile_backup" && -f "$old_swapfile_backup" ]]; then
+            mv "$old_swapfile_backup" "$SWAPFILE_PATH"
+            if [[ "$old_swapfile_active" == true ]]; then
+                swapon "$SWAPFILE_PATH" 2>/dev/null || log_warn "Previous $SWAPFILE_PATH was restored but could not be reactivated"
+            fi
+        fi
+        cleanup_new_swapfile
+        exit 1
+    fi
+    if ! chmod 600 "$SWAPFILE_PATH"; then
+        log_error "Failed to set permissions on $SWAPFILE_PATH"
+        exit 1
+    fi
 
-    # Format as swap
-    mkswap "$SWAPFILE_PATH"
-    log_info "Formatted as swap"
-
-    # Activate with priority
-    swapon -p "$SWAP_PRIORITY" "$SWAPFILE_PATH"
+    if ! swapon -p "$SWAP_PRIORITY" "$SWAPFILE_PATH"; then
+        log_error "Failed to activate new $SWAPFILE_PATH; attempting to restore previous swapfile"
+        rm -f "$SWAPFILE_PATH"
+        if [[ -n "$old_swapfile_backup" && -f "$old_swapfile_backup" ]]; then
+            mv "$old_swapfile_backup" "$SWAPFILE_PATH"
+            if [[ "$old_swapfile_active" == true ]]; then
+                swapon "$SWAPFILE_PATH" 2>/dev/null || log_warn "Previous $SWAPFILE_PATH was restored but could not be reactivated"
+            fi
+        fi
+        exit 1
+    fi
     log_info "Activated with priority $SWAP_PRIORITY"
 
-    # Update /etc/fstab
+    if [[ -n "$old_swapfile_backup" && -f "$old_swapfile_backup" ]]; then
+        rm -f "$old_swapfile_backup"
+    fi
+
     update_fstab
 }
 
 update_fstab() {
     log_info "Updating /etc/fstab..."
 
-    # Backup fstab before modifying
-    cp /etc/fstab /etc/fstab.bak.$(date +%Y%m%d%H%M%S)
-    log_info "Backed up /etc/fstab"
-
-    # Remove any existing swap entries for our swapfile
-    if grep -q "$SWAPFILE_PATH" /etc/fstab 2>/dev/null; then
-        sed -i "\|$SWAPFILE_PATH|d" /etc/fstab
+    backup_fstab
+    if fstab_has_swapfile_entry; then
         log_info "Removed old $SWAPFILE_PATH entries from /etc/fstab"
     fi
-
-    # Add new entry
-    echo "$SWAPFILE_PATH none swap sw,pri=$SWAP_PRIORITY 0 0" >> /etc/fstab
+    rewrite_fstab true
     log_info "Added: $SWAPFILE_PATH none swap sw,pri=$SWAP_PRIORITY 0 0"
 }
 
 setup_zram() {
     log_section "Setting up zram (${ZRAM_PERCENT}% of RAM, algo=${ZRAM_ALGO}, priority=${ZRAM_PRIORITY})"
 
-    # Install zram-tools if not present
-    if ! dpkg -l zram-tools 2>/dev/null | grep -q "^ii"; then
-        log_info "Installing zram-tools..."
-        apt-get update -qq
-        apt-get install -y -qq zram-tools
-        log_info "zram-tools installed"
-    else
-        log_info "zram-tools already installed"
+    local config_path="/etc/default/zramswap"
+    local tmp_config backup_config
+    tmp_config=$(mktemp /etc/default/zramswap.swap-setup.XXXXXX)
+    backup_config=""
+
+    if [[ -f "$config_path" ]]; then
+        backup_config="${config_path}.bak.$(date +%Y%m%d%H%M%S)"
+        cp -a "$config_path" "$backup_config"
+        log_info "Backed up $config_path to $backup_config"
     fi
 
-    # Write zramswap config
     log_info "Writing /etc/default/zramswap..."
-    cat > /etc/default/zramswap <<EOF
+    cat > "$tmp_config" <<EOF
 # Configured by swap-setup.sh
 # Compression algorithm: ${ZRAM_ALGO}
 # Available: zstd | lz4 | lzo | lzo-rle | lz4hc | zlib | 842
@@ -588,12 +877,20 @@ PERCENT=${ZRAM_PERCENT}
 # Swap priority (higher = used first; disk swap typically has priority ${SWAP_PRIORITY})
 PRIORITY=${ZRAM_PRIORITY}
 EOF
+    chmod 644 "$tmp_config"
+    mv "$tmp_config" "$config_path"
     log_info "zramswap config written"
 
-    # Restart zramswap service
-    log_info "Restarting zramswap service..."
-    systemctl restart zramswap
-    log_info "zramswap service restarted"
+    # Enable for boot and restart with the new config
+    if ! restart_zramswap_service; then
+        log_error "Failed to enable/restart zramswap service"
+        if [[ -n "$backup_config" && -f "$backup_config" ]]; then
+            cp -a "$backup_config" "$config_path"
+            log_warn "Restored previous $config_path from backup"
+            systemctl restart zramswap 2>/dev/null || log_warn "Previous zramswap configuration was restored but the service could not be restarted"
+        fi
+        exit 1
+    fi
 }
 
 setup_swappiness() {
@@ -603,11 +900,27 @@ setup_swappiness() {
 
     # Persist across reboots
     local sysctl_file="/etc/sysctl.d/99-swappiness.conf"
-    echo "vm.swappiness=$SWAPPINESS" > "$sysctl_file"
+    local tmp_sysctl
+    tmp_sysctl=$(mktemp /etc/sysctl.d/99-swappiness.conf.XXXXXX)
+    printf '%s\n' "vm.swappiness=$SWAPPINESS" > "$tmp_sysctl"
+    chmod 644 "$tmp_sysctl"
+    mv "$tmp_sysctl" "$sysctl_file"
     log_info "Saved to $sysctl_file (persistent after reboot)"
 }
 
 # ── Status / verification ────────────────────────────────────────────────────
+
+print_command_output() {
+    local empty_message="$1"
+    shift
+
+    local output
+    if output="$("$@" 2>/dev/null)" && [[ -n "$output" ]]; then
+        printf '%s\n' "$output"
+    else
+        echo "  ($empty_message)"
+    fi
+}
 
 show_status() {
     local ram_mb
@@ -616,13 +929,13 @@ show_status() {
     log_section "System: $(detect_os), RAM: ${ram_mb} MB ($(get_total_ram_gb_label))"
 
     log_section "zramctl"
-    zramctl 2>/dev/null || echo "  (no zram devices found)"
+    print_command_output "no zram devices found or zramctl returned no rows" zramctl
 
     log_section "swapon --show"
-    swapon --show 2>/dev/null || echo "  (no swap devices active)"
+    print_command_output "no swap devices active" swapon --show
 
     log_section "zramctl --output-all"
-    zramctl --output-all 2>/dev/null || echo "  (no zram devices found)"
+    print_command_output "no zram devices found or zramctl returned no rows" zramctl --output-all
 
     log_section "free -h"
     free -h
@@ -631,6 +944,83 @@ show_status() {
     local swappiness
     swappiness=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo "unknown")
     log_info "Current vm.swappiness = $swappiness"
+}
+
+verify_configuration() {
+    log_section "Verifying configured swap/zram"
+
+    local failed=false
+    local priority current_swappiness expected_zram_bytes actual_zram_bytes diff_bytes current_algo memtotal_kb
+
+    if is_swapfile_active; then
+        priority=$(get_swap_priority "$SWAPFILE_PATH" || true)
+        if [[ "$priority" == "$SWAP_PRIORITY" ]]; then
+            log_info "$SWAPFILE_PATH is active with priority $SWAP_PRIORITY"
+        else
+            log_error "$SWAPFILE_PATH is active but priority is '${priority:-unknown}', expected $SWAP_PRIORITY"
+            failed=true
+        fi
+    else
+        log_error "$SWAPFILE_PATH is not active"
+        failed=true
+    fi
+
+    priority=$(get_swap_priority "/dev/zram0" || true)
+    if [[ "$priority" == "$ZRAM_PRIORITY" ]]; then
+        log_info "/dev/zram0 is active with priority $ZRAM_PRIORITY"
+    else
+        log_error "/dev/zram0 priority is '${priority:-inactive}', expected $ZRAM_PRIORITY"
+        failed=true
+    fi
+
+    if [[ -r /sys/block/zram0/disksize ]]; then
+        memtotal_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+        expected_zram_bytes=$(( memtotal_kb * 1024 * ZRAM_PERCENT / 100 ))
+        actual_zram_bytes=$(cat /sys/block/zram0/disksize)
+        diff_bytes=$(( actual_zram_bytes > expected_zram_bytes ? actual_zram_bytes - expected_zram_bytes : expected_zram_bytes - actual_zram_bytes ))
+        if (( diff_bytes <= 2 * 1024 * 1024 )); then
+            log_info "/dev/zram0 size matches configured ${ZRAM_PERCENT}% of RAM"
+        else
+            log_error "/dev/zram0 size is $actual_zram_bytes bytes, expected about $expected_zram_bytes bytes"
+            failed=true
+        fi
+    else
+        log_warn "Cannot verify /dev/zram0 size from sysfs"
+    fi
+
+    if [[ -r /sys/block/zram0/comp_algorithm ]]; then
+        current_algo=$(tr ' ' '\n' < /sys/block/zram0/comp_algorithm | awk '/^\[/ { gsub(/\[|\]/, ""); print; exit }')
+        if [[ "$current_algo" == "$ZRAM_ALGO" ]]; then
+            log_info "/dev/zram0 compression algorithm is $ZRAM_ALGO"
+        else
+            log_error "/dev/zram0 compression algorithm is '${current_algo:-unknown}', expected $ZRAM_ALGO"
+            failed=true
+        fi
+    else
+        log_warn "Cannot verify /dev/zram0 compression algorithm from sysfs"
+    fi
+
+    current_swappiness=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo "unknown")
+    if [[ "$current_swappiness" == "$SWAPPINESS" ]]; then
+        log_info "vm.swappiness is $SWAPPINESS"
+    else
+        log_error "vm.swappiness is '$current_swappiness', expected $SWAPPINESS"
+        failed=true
+    fi
+
+    if fstab_has_swapfile_entry; then
+        log_info "/etc/fstab contains the managed $SWAPFILE_PATH entry"
+    else
+        log_error "/etc/fstab does not contain the managed $SWAPFILE_PATH entry"
+        failed=true
+    fi
+
+    if [[ "$failed" == true ]]; then
+        log_error "Verification failed. See messages above."
+        exit 1
+    fi
+
+    log_info "Verification passed"
 }
 
 # ── Remove ───────────────────────────────────────────────────────────────────
@@ -653,7 +1043,7 @@ remove_swap() {
     fi
 
     # Deactivate swapfile
-    if swapon --show --noheadings 2>/dev/null | grep -q "$SWAPFILE_PATH"; then
+    if is_swapfile_active; then
         swapoff "$SWAPFILE_PATH" 2>/dev/null || true
         log_info "Deactivated $SWAPFILE_PATH"
     fi
@@ -665,16 +1055,14 @@ remove_swap() {
     fi
 
     # Clean fstab
-    if grep -q "$SWAPFILE_PATH" /etc/fstab 2>/dev/null; then
-        sed -i "\|$SWAPFILE_PATH|d" /etc/fstab
+    if fstab_has_swapfile_entry; then
+        backup_fstab
+        rewrite_fstab false
         log_info "Removed swap entry from /etc/fstab"
     fi
 
-    # Stop zramswap
-    if systemctl is-active --quiet zramswap 2>/dev/null; then
-        systemctl stop zramswap
-        log_info "Stopped zramswap service"
-    fi
+    # Stop and disable zramswap so zram does not come back after reboot
+    stop_disable_zramswap_service
 
     # Remove zramswap config
     if [[ -f /etc/default/zramswap ]]; then
@@ -697,9 +1085,10 @@ remove_swap() {
 # ── Summary before install ───────────────────────────────────────────────────
 
 show_plan() {
-    local ram_mb zram_size_mb
+    local ram_mb zram_size_mb compressed_ram_mb
     ram_mb=$(get_total_ram_mb)
     zram_size_mb=$(( ram_mb * ZRAM_PERCENT / 100 ))
+    compressed_ram_mb=$(estimate_compressed_ram_mb "$zram_size_mb")
 
     log_section "Installation plan"
     echo ""
@@ -714,7 +1103,7 @@ show_plan() {
     echo -e "  ${DIM}└─────────────────────┴─────────────────────────────────────┘${NC}"
     echo ""
     echo -e "  ${DIM}Swap priority: zram (${ZRAM_PRIORITY}) >> disk swap (${SWAP_PRIORITY})${NC}"
-    echo -e "  ${DIM}Effective zram capacity after compression (~3:1): ~$((zram_size_mb * 3)) MB${NC}"
+    echo -e "  ${DIM}zram logical swap size is ~${zram_size_mb} MB; at ~${COMPRESSION_RATIO_ESTIMATE}:1 compression its data may use ~${compressed_ram_mb} MB RAM${NC}"
     echo ""
 
     if [[ "$AUTO_YES" != true ]]; then
@@ -740,22 +1129,22 @@ parse_args() {
         case "$1" in
             --ram)
                 require_arg "$@"
-                RAM_TEMPLATE="$2"; shift 2 ;;
+                RAM_TEMPLATE="$2"; HAS_INSTALL_OPTIONS=true; shift 2 ;;
             --swapfile-size)
                 require_arg "$@"
-                SWAPFILE_SIZE_MB="$2"; shift 2 ;;
+                SWAPFILE_SIZE_MB="$2"; HAS_INSTALL_OPTIONS=true; shift 2 ;;
             --zram-percent)
                 require_arg "$@"
-                ZRAM_PERCENT="$2"; shift 2 ;;
+                ZRAM_PERCENT="$2"; HAS_INSTALL_OPTIONS=true; shift 2 ;;
             --zram-algo)
                 require_arg "$@"
-                ZRAM_ALGO="$2"; shift 2 ;;
+                ZRAM_ALGO="$2"; ZRAM_ALGO_EXPLICIT=true; HAS_INSTALL_OPTIONS=true; shift 2 ;;
             --zram-priority)
                 require_arg "$@"
-                ZRAM_PRIORITY="$2"; shift 2 ;;
+                ZRAM_PRIORITY="$2"; HAS_INSTALL_OPTIONS=true; shift 2 ;;
             --swappiness)
                 require_arg "$@"
-                SWAPPINESS="$2"; shift 2 ;;
+                SWAPPINESS="$2"; HAS_INSTALL_OPTIONS=true; shift 2 ;;
             --yes)
                 AUTO_YES=true; shift ;;
             --remove)
@@ -771,9 +1160,8 @@ parse_args() {
     done
 
     # Determine if we should run interactive wizard:
-    # No template, no manual values, no --yes flag
-    if [[ "$ACTION" == "install" && -z "$RAM_TEMPLATE" && -z "$SWAPFILE_SIZE_MB" \
-        && -z "$ZRAM_PERCENT" && -z "$SWAPPINESS" && "$AUTO_YES" != true ]]; then
+    # No install options and no --yes flag
+    if [[ "$ACTION" == "install" && "$HAS_INSTALL_OPTIONS" != true && "$AUTO_YES" != true ]]; then
         INTERACTIVE=true
     fi
 }
@@ -807,18 +1195,10 @@ main() {
         apply_template "$RAM_TEMPLATE"
         log_info "Template $RAM_TEMPLATE applied"
     else
-        # Auto-detect or use provided values
+        # Auto-detect template as a base; CLI values override matching fields.
         show_system_info
-        if [[ -z "$SWAPFILE_SIZE_MB" && -z "$ZRAM_PERCENT" && -z "$SWAPPINESS" ]]; then
-            log_info "No template specified, auto-detecting based on system RAM..."
-            auto_detect_template
-        else
-            SWAPFILE_SIZE_MB="${SWAPFILE_SIZE_MB:-1024}"
-            ZRAM_ALGO="${ZRAM_ALGO:-zstd}"
-            ZRAM_PERCENT="${ZRAM_PERCENT:-50}"
-            ZRAM_PRIORITY="${ZRAM_PRIORITY:-100}"
-            SWAPPINESS="${SWAPPINESS:-80}"
-        fi
+        log_info "No RAM template specified, auto-detecting base settings from system RAM..."
+        auto_detect_template
     fi
 
     # Ensure all values are set (fallback for any empty)
@@ -828,14 +1208,19 @@ main() {
     # Validate all parameters before proceeding
     validate_all_params
 
+    preflight_checks
     check_existing_swap
     show_plan
+    check_zram_kernel_support
+    ensure_zram_tools_installed
     setup_swapfile
     setup_zram
     setup_swappiness
 
     # Reload systemd to pick up fstab changes
     systemctl daemon-reload 2>/dev/null || true
+
+    verify_configuration
 
     log_section "Setup complete! Verification:"
     show_status
