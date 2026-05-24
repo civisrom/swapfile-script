@@ -707,10 +707,52 @@ is_swapfile_active() {
         | awk -v path="$SWAPFILE_PATH" '$1 == path { found = 1 } END { exit !found }'
 }
 
+is_swap_device_active() {
+    local path="$1"
+    swapon --show --noheadings --raw --output=NAME 2>/dev/null \
+        | awk -v path="$path" '$1 == path { found = 1 } END { exit !found }'
+}
+
 get_swap_priority() {
     local path="$1"
     swapon --show --noheadings --raw --output=NAME,PRIO 2>/dev/null \
         | awk -v path="$path" '$1 == path { print $2; found = 1 } END { exit !found }'
+}
+
+# Wait until expected swap devices appear active with the configured priority,
+# or until the timeout elapses. `systemctl restart zramswap` returns as soon as
+# ExecStart completes, but /proc/swaps may not reflect the new state for a
+# moment, and during ExecStop the zramswap unit briefly does `swapoff
+# /dev/zram0`. Without waiting, verify_configuration races and reports false
+# negatives like "/dev/zram0 priority is 'inactive'".
+wait_for_swap_active() {
+    local timeout_s="${1:-10}"
+    local deadline=$(( SECONDS + timeout_s ))
+    local prio
+
+    while (( SECONDS < deadline )); do
+        local ok=true
+
+        if is_swapfile_active; then
+            prio=$(get_swap_priority "$SWAPFILE_PATH" || true)
+            [[ "$prio" == "$SWAP_PRIORITY" ]] || ok=false
+        else
+            ok=false
+        fi
+
+        if is_swap_device_active "/dev/zram0"; then
+            prio=$(get_swap_priority "/dev/zram0" || true)
+            [[ "$prio" == "$ZRAM_PRIORITY" ]] || ok=false
+        else
+            ok=false
+        fi
+
+        if [[ "$ok" == true ]]; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
 }
 
 fstab_has_swap_entries() {
@@ -1383,6 +1425,11 @@ main() {
 
     # Reload systemd to pick up fstab changes
     systemctl daemon-reload 2>/dev/null || true
+
+    # Give swapon / zramswap.service a brief window to reach steady state
+    # before verifying, otherwise /proc/swaps races against the just-issued
+    # systemctl restart and verify_configuration sees stale "inactive" rows.
+    wait_for_swap_active 10 || true
 
     verify_configuration
 
