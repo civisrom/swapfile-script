@@ -702,21 +702,54 @@ check_existing_swap() {
     fi
 }
 
-is_swapfile_active() {
-    swapon --show --noheadings --raw --output=NAME 2>/dev/null \
-        | awk -v path="$SWAPFILE_PATH" '$1 == path { found = 1 } END { exit !found }'
-}
+same_swap_path() {
+    local expected="$1" actual="$2"
+    local expected_real actual_real
 
-is_swap_device_active() {
-    local path="$1"
-    swapon --show --noheadings --raw --output=NAME 2>/dev/null \
-        | awk -v path="$path" '$1 == path { found = 1 } END { exit !found }'
+    [[ "$expected" == "$actual" ]] && return 0
+
+    if command -v readlink &>/dev/null; then
+        expected_real=$(readlink -f -- "$expected" 2>/dev/null || true)
+        actual_real=$(readlink -f -- "$actual" 2>/dev/null || true)
+        [[ -n "$expected_real" && "$expected_real" == "$actual_real" ]] && return 0
+    fi
+
+    return 1
 }
 
 get_swap_priority() {
     local path="$1"
-    swapon --show --noheadings --raw --output=NAME,PRIO 2>/dev/null \
-        | awk -v path="$path" '$1 == path { print $2; found = 1 } END { exit !found }'
+    local name priority type size used
+
+    while read -r name priority; do
+        if same_swap_path "$path" "$name"; then
+            printf '%s\n' "$priority"
+            return 0
+        fi
+    done < <(swapon --show --noheadings --raw --output=NAME,PRIO 2>/dev/null || true)
+
+    # Fallback for systems where swapon output formatting differs. /proc/swaps
+    # columns are: Filename Type Size Used Priority.
+    if [[ -r /proc/swaps ]]; then
+        while read -r name type size used priority; do
+            [[ "$name" == "Filename" ]] && continue
+            if same_swap_path "$path" "$name"; then
+                printf '%s\n' "$priority"
+                return 0
+            fi
+        done < /proc/swaps
+    fi
+
+    return 1
+}
+
+is_swapfile_active() {
+    get_swap_priority "$SWAPFILE_PATH" >/dev/null
+}
+
+is_swap_device_active() {
+    local path="$1"
+    get_swap_priority "$path" >/dev/null
 }
 
 # Wait until expected swap devices appear active with the configured priority,
