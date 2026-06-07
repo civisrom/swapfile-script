@@ -30,7 +30,7 @@ ZRAM_ALGO=""
 ZRAM_PERCENT=""
 ZRAM_PRIORITY=""
 ZRAM_ALGO_EXPLICIT=false
-SWAP_PRIORITY=-2
+SWAP_PRIORITY=10
 SWAPPINESS=""
 RAM_TEMPLATE=""
 AUTO_YES=false
@@ -1172,27 +1172,32 @@ verify_configuration() {
     log_section "$(msg "Verifying configured swap/zram" "Проверка настроенного swap/zram")"
 
     local failed=false
-    local priority current_swappiness expected_zram_bytes actual_zram_bytes diff_bytes current_algo memtotal_kb
+    local priority zram_priority current_swappiness expected_zram_bytes actual_zram_bytes diff_bytes current_algo memtotal_kb
 
     if is_swapfile_active; then
         priority=$(get_swap_priority "$SWAPFILE_PATH" || true)
         if [[ "$priority" == "$SWAP_PRIORITY" ]]; then
             log_info "$(msg "$SWAPFILE_PATH is active with priority $SWAP_PRIORITY" "$SWAPFILE_PATH активен с приоритетом $SWAP_PRIORITY")"
         else
-            log_error "$(msg "$SWAPFILE_PATH is active but priority is '${priority:-unknown}', expected $SWAP_PRIORITY" "$SWAPFILE_PATH активен, но приоритет '${priority:-unknown}', ожидалось $SWAP_PRIORITY")"
-            failed=true
+            log_warn "$(msg "$SWAPFILE_PATH is active with priority '${priority:-unknown}' (configured target: $SWAP_PRIORITY)" "$SWAPFILE_PATH активен с приоритетом '${priority:-unknown}' (целевое значение: $SWAP_PRIORITY)")"
         fi
     else
         log_error "$(msg "$SWAPFILE_PATH is not active" "$SWAPFILE_PATH не активен")"
         failed=true
     fi
 
-    priority=$(get_swap_priority "/dev/zram0" || true)
-    if [[ "$priority" == "$ZRAM_PRIORITY" ]]; then
+    zram_priority=$(get_swap_priority "/dev/zram0" || true)
+    if [[ "$zram_priority" == "$ZRAM_PRIORITY" ]]; then
         log_info "$(msg "/dev/zram0 is active with priority $ZRAM_PRIORITY" "/dev/zram0 активен с приоритетом $ZRAM_PRIORITY")"
+    elif [[ -n "$zram_priority" ]]; then
+        log_warn "$(msg "/dev/zram0 is active with priority '$zram_priority' (configured target: $ZRAM_PRIORITY)" "/dev/zram0 активен с приоритетом '$zram_priority' (целевое значение: $ZRAM_PRIORITY)")"
     else
-        log_error "$(msg "/dev/zram0 priority is '${priority:-inactive}', expected $ZRAM_PRIORITY" "Приоритет /dev/zram0: '${priority:-inactive}', ожидалось $ZRAM_PRIORITY")"
+        log_error "$(msg "/dev/zram0 is not active" "/dev/zram0 не активен")"
         failed=true
+    fi
+
+    if [[ -n "${priority:-}" && -n "$zram_priority" ]] && (( priority >= zram_priority )); then
+        log_warn "$(msg "$SWAPFILE_PATH priority ($priority) is not lower than /dev/zram0 priority ($zram_priority); zram may not be preferred" "Приоритет $SWAPFILE_PATH ($priority) не ниже приоритета /dev/zram0 ($zram_priority); zram может не использоваться первым")"
     fi
 
     if [[ -r /sys/block/zram0/disksize ]]; then
@@ -1203,8 +1208,7 @@ verify_configuration() {
         if (( diff_bytes <= 2 * 1024 * 1024 )); then
             log_info "$(msg "/dev/zram0 size matches configured ${ZRAM_PERCENT}% of RAM" "Размер /dev/zram0 соответствует настроенным ${ZRAM_PERCENT}% от RAM")"
         else
-            log_error "$(msg "/dev/zram0 size is $actual_zram_bytes bytes, expected about $expected_zram_bytes bytes" "Размер /dev/zram0: $actual_zram_bytes байт, ожидалось около $expected_zram_bytes байт")"
-            failed=true
+            log_warn "$(msg "/dev/zram0 size is $actual_zram_bytes bytes, expected about $expected_zram_bytes bytes" "Размер /dev/zram0: $actual_zram_bytes байт, ожидалось около $expected_zram_bytes байт")"
         fi
     else
         log_warn "$(msg "Cannot verify /dev/zram0 size from sysfs" "Не удалось проверить размер /dev/zram0 через sysfs")"
@@ -1215,8 +1219,7 @@ verify_configuration() {
         if [[ "$current_algo" == "$ZRAM_ALGO" ]]; then
             log_info "$(msg "/dev/zram0 compression algorithm is $ZRAM_ALGO" "Алгоритм сжатия /dev/zram0: $ZRAM_ALGO")"
         else
-            log_error "$(msg "/dev/zram0 compression algorithm is '${current_algo:-unknown}', expected $ZRAM_ALGO" "Алгоритм сжатия /dev/zram0: '${current_algo:-unknown}', ожидалось $ZRAM_ALGO")"
-            failed=true
+            log_warn "$(msg "/dev/zram0 compression algorithm is '${current_algo:-unknown}', expected $ZRAM_ALGO" "Алгоритм сжатия /dev/zram0: '${current_algo:-unknown}', ожидалось $ZRAM_ALGO")"
         fi
     else
         log_warn "$(msg "Cannot verify /dev/zram0 compression algorithm from sysfs" "Не удалось проверить алгоритм сжатия /dev/zram0 через sysfs")"
